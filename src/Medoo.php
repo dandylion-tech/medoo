@@ -14,7 +14,7 @@ declare(strict_types=1);
  * @link https://medoo.in
  */
 
-namespace Medoo;
+namespace Dandylion;
 
 use PDO;
 use Exception;
@@ -200,8 +200,11 @@ class Medoo
      * @codeCoverageIgnore
      */
 
+    protected $table_quotes;
+
     public function __construct(array $options)
     {
+        $this->table_quotes = $options['table_quotes'] ?? '`';
         if (isset($options['prefix'])) {
             $this->prefix = $options['prefix'];
         }
@@ -711,7 +714,7 @@ class Medoo
     public function tableQuote(string $table): string
     {
         if (preg_match('/^[\p{L}_][\p{L}\p{N}@$#\-_]*$/u', $table)) {
-            return '"' . $this->prefix . $table . '"';
+            return $this->table_quotes . $this->prefix . $table . $this->table_quotes;
         }
 
         throw new InvalidArgumentException("Incorrect table name: {$table}.");
