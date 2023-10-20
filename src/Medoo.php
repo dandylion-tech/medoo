@@ -201,10 +201,14 @@ class Medoo
      */
 
     protected $table_quotes;
+    protected $column_quotes;
+    protected $quotes;
 
     public function __construct(array $options)
     {
-        $this->table_quotes = $options['table_quotes'] ?? '`';
+        $this->quotes = $options['quotes'] ?? '`';
+        $this->table_quotes = $options['table_quotes'] ?? $this->quotes;
+        $this->column_quotes = $options['column_quotes'] ?? $this->quotes;
         if (isset($options['prefix'])) {
             $this->prefix = $options['prefix'];
         }
@@ -730,8 +734,8 @@ class Medoo
     {
         if (preg_match('/^[\p{L}_][\p{L}\p{N}@$#\-_]*(\.?[\p{L}_][\p{L}\p{N}@$#\-_]*)?$/u', $column)) {
             return strpos($column, '.') !== false ?
-                '"' . $this->prefix . str_replace('.', '"."', $column) . '"' :
-                '"' . $column . '"';
+            $this->column_quotes . $this->prefix . str_replace('.', $this->column_quotes.'.'.$this->column_quotes, $column) . $this->column_quotes :
+            $this->column_quotes . $column . $this->column_quotes;
         }
 
         throw new InvalidArgumentException("Incorrect column name: {$column}.");
