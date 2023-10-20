@@ -199,7 +199,6 @@ class Medoo
      * @link https://medoo.in/api/new
      * @codeCoverageIgnore
      */
-
     protected $table_quotes;
     protected $column_quotes;
     protected $quotes;
