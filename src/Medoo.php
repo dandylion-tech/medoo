@@ -199,15 +199,17 @@ class Medoo
      * @link https://medoo.in/api/new
      * @codeCoverageIgnore
      */
+	protected $schema_quotes;
     protected $table_quotes;
     protected $column_quotes;
     protected $quotes;
 
     public function __construct(array $options)
     {
-        $this->quotes = $options['quotes'] ?? '`';
-        $this->table_quotes = $options['table_quotes'] ?? $this->quotes;
+        $this->quotes = $options['quotes'] ?? '"';
         $this->column_quotes = $options['column_quotes'] ?? $this->quotes;
+        $this->table_quotes = $options['table_quotes'] ?? $this->quotes;
+		$this->schema_quotes = $options['schema_quotes'] ?? $this->table_quotes;
         if (isset($options['prefix'])) {
             $this->prefix = $options['prefix'];
         }
@@ -667,14 +669,19 @@ class Medoo
         }
 
         $query = preg_replace_callback(
-            '/(([`\']).*?)?((FROM|TABLE|INTO|UPDATE|JOIN|TABLE IF EXISTS)\s*)?\<(([\p{L}_][\p{L}\p{N}@$#\-_]*)(\.[\p{L}_][\p{L}\p{N}@$#\-_]*)?)\>([^,]*?\2)?/u',
+            '/(([`\']).*?)?((FROM|TABLE|INTO|UPDATE|JOIN|TABLE IF EXISTS)\s*)?\<(((?:[\p{L}_][\p{L}\p{N}@$#\-_]*\.)?[\p{L}_][\p{L}\p{N}@$#\-_]*)(\.[\p{L}_][\p{L}\p{N}@$#\-_]*)?)\>([^,]*?\2)?/u',
             function ($matches) {
                 if (!empty($matches[2]) && isset($matches[8])) {
                     return $matches[0];
                 }
 
                 if (!empty($matches[4])) {
-                    return $matches[1] . $matches[4] . ' ' . $this->tableQuote($matches[5]);
+					$table_schema = explode(".",$matches[5]);
+					$table = $this->tableQuote(end($table_schema));
+					if(count($table_schema)==2){
+						$table = $this->schemaQuote($table_schema[0]).".".$table;
+					}
+                    return $matches[1] . $matches[4] . ' ' . $table;
                 }
 
                 return $matches[1] . $this->columnQuote($matches[5]);
@@ -706,6 +713,21 @@ class Medoo
         }
 
         return "'" . preg_replace('/\'/', '\'\'', $string) . "'";
+    }
+
+    /**
+     * Quote schema name for use in a query.
+     *
+     * @param string $schema
+     * @return string
+     */
+    public function schemaQuote(string $schema): string
+    {
+        if (preg_match('/^[\p{L}_][\p{L}\p{N}@$#\-_]*$/u', $schema)) {
+            return $this->schema_quotes . $this->prefix . $schema . $this->schema_quotes;
+        }
+
+        throw new InvalidArgumentException("Incorrect schema name: {$schema}.");
     }
 
     /**
@@ -789,48 +811,70 @@ class Medoo
         if (is_string($columns)) {
             $columns = [$columns];
         }
-
         foreach ($columns as $key => $value) {
             $isIntKey = is_int($key);
             $isArrayValue = is_array($value);
 
             if (!$isIntKey && $isArrayValue && $root && count(array_keys($columns)) === 1) {
-                $stack[] = $this->columnQuote($key);
+				$table_column = explode(".",$key);
+				$column = (end($table_column)=="*"?"*":$this->columnQuote(end($table_column)));
+				if(count($table_column)==2){
+					$column = $this->tableQuote($table_column[0]).".".$column;
+				}
+                $stack[] = $column;
                 $stack[] = $this->columnPush($value, $map, false, $isJoin);
             } elseif ($isArrayValue) {
                 $stack[] = $this->columnPush($value, $map, false, $isJoin);
             } elseif (!$isIntKey && $raw = $this->buildRaw($value, $map)) {
-                preg_match('/(?<column>[\p{L}_][\p{L}\p{N}@$#\-_\.]*)(\s*\[(?<type>(String|Bool|Int|Number))\])?/u', $key, $match);
-                $stack[] = "{$raw} AS {$this->columnQuote($match['column'])}";
+                preg_match('/(?:(?<table>[\p{L}_][\p{L}\p{N}@$#\-_]*)\.)?(?<column>[\p{L}_*][\p{L}\p{N}@$#\-_]*)(\s*\[(?<type>(String|Bool|Int|Number))\])?/u', $key, $match);
+                $stack[] = "{$raw} AS ".($match["table"]?$this->tableQuote($match["table"]).".":"").($match['column']=="*"?"*":$this->columnQuote($match['column']));
             } elseif ($isIntKey && is_string($value)) {
-                if ($isJoin && strpos($value, '*') !== false) {
+                /*if ($isJoin && strpos($value, '*') !== false) {
                     throw new InvalidArgumentException('Cannot use table.* to select all columns while joining table.');
-                }
+                }*/
 
-                preg_match('/(?<column>[\p{L}_][\p{L}\p{N}@$#\-_\.]*)(?:\s*\((?<alias>[\p{L}_][\p{L}\p{N}@$#\-_]*)\))?(?:\s*\[(?<type>(?:String|Bool|Int|Number|Object|JSON))\])?/u', $value, $match);
+                preg_match('/(?:(?<table>[\p{L}_][\p{L}\p{N}@$#\-_]*)\.)?(?<column>[\p{L}_*][\p{L}\p{N}@$#\-_]*)(?:\s*\((?<alias>[\p{L}_][\p{L}\p{N}@$#\-_]*)\))?(?:\s*\[(?<type>(?:String|Bool|Int|Number|Object|JSON))\])?/u', $value, $match);
 
                 $columnString = '';
+				if($match["column"]=="*"){
+					$column_list = $this->query("SELECT column_name FROM information_schema.columns WHERE table_name = :table",[":table"=>$match['table']])->fetchAll(\PDO::FETCH_COLUMN);
+				} else {
+					$column_list = [$match["column"]];
+				}
+				$column_name_list = [];
+				foreach($column_list as $column_name){
+					if (!empty($match['alias'])) {
+						$columnString = ($match['table']?$this->tableQuote($match['table']).".":"").($this->columnQuote($column_name))." AS ".$this->columnQuote($match['alias'].($match["column"]=="*"?$column_name:""));
+						
+						if(is_int($key)){
+							$column_name_list[] = $match['alias'].($match["column"]=="*"?$column_name:"");
+						} else {
+							$columns[$key] = $match['alias'].($match["column"]=="*"?$column_name:"");
+						}
+						if (!empty($match['type'])) {
+							if(is_int($key)){
+								$column_name_list[] =$columns[$key] .= ' [' . $match['type'] . ']';
+							} else {
+								$columns[$key] .= ' [' . $match['type'] . ']';
+							}
+						}
+					} else {
+						$columnString = ($match["table"]?$this->tableQuote($match["table"]).".":"").($match['column']=="*"?"*":$this->columnQuote($match['column']));
+					}
 
-                if (!empty($match['alias'])) {
-                    $columnString = "{$this->columnQuote($match['column'])} AS {$this->columnQuote($match['alias'])}";
-                    $columns[$key] = $match['alias'];
+					if (!$hasDistinct && strpos($value, '@') === 0) {
+						$columnString = 'DISTINCT ' . $columnString;
+						$hasDistinct = true;
+						array_unshift($stack, $columnString);
 
-                    if (!empty($match['type'])) {
-                        $columns[$key] .= ' [' . $match['type'] . ']';
-                    }
-                } else {
-                    $columnString = $this->columnQuote($match['column']);
-                }
+						continue;
+					}
 
-                if (!$hasDistinct && strpos($value, '@') === 0) {
-                    $columnString = 'DISTINCT ' . $columnString;
-                    $hasDistinct = true;
-                    array_unshift($stack, $columnString);
-
-                    continue;
-                }
-
-                $stack[] = $columnString;
+					$stack[] = $columnString;
+				}
+				if(count($column_name_list)>0){
+					array_splice($columns,array_search($value,$columns),1,$column_name_list);
+				}
             }
         }
 
@@ -1029,6 +1073,7 @@ class Medoo
     {
         $clause = '';
 
+			
         if (is_array($where)) {
             $conditions = array_diff_key($where, array_flip(
                 ['GROUP', 'ORDER', 'HAVING', 'LIMIT', 'LIKE', 'MATCH']
@@ -1178,14 +1223,21 @@ class Medoo
         $where = null,
         $columnFn = null
     ): string {
-        preg_match('/(?<table>[\p{L}_][\p{L}\p{N}@$#\-_]*)\s*\((?<alias>[\p{L}_][\p{L}\p{N}@$#\-_]*)\)/u', $table, $tableMatch);
+        preg_match('/(?:(?<schema>[\p{L}_][\p{L}\p{N}@$#\-_]*)\.)?(?<table>[\p{L}_][\p{L}\p{N}@$#\-_]*)\s*\((?<alias>[\p{L}_][\p{L}\p{N}@$#\-_]*)\)/u', $table, $tableMatch);
 
         if (isset($tableMatch['table'], $tableMatch['alias'])) {
+			if(isset($tableMatch['schema'])){
+				$schema = $this->schemaQuote($tableMatch['schema']);
+			}
             $table = $this->tableQuote($tableMatch['table']);
             $tableAlias = $this->tableQuote($tableMatch['alias']);
-            $tableQuery = "{$table} AS {$tableAlias}";
+            $tableQuery = ($schema?$schema.".":"")."{$table} AS {$tableAlias}";
         } else {
-            $table = $this->tableQuote($table);
+			$schema_table = explode(".",$table);
+            $table = $this->tableQuote(end($schema_table));
+			if(count($schema_table)==2){
+				$table = $this->schemaQuote($schema_table[0]).".".$table;
+			}
             $tableQuery = $table;
         }
 
@@ -1279,7 +1331,7 @@ class Medoo
         ];
 
         foreach ($join as $subtable => $relation) {
-            preg_match('/(\[(?<join>\<\>?|\>\<?)\])?(?<table>[\p{L}_][\p{L}\p{N}@$#\-_]*)\s?(\((?<alias>[\p{L}_][\p{L}\p{N}@$#\-_]*)\))?/u', $subtable, $match);
+            preg_match('/(\[(?<join>\<\>?|\>\<?)\])?(?:(?<schema>[\p{L}_][\p{L}\p{N}@$#\-_]*)\.)?(?<table>[\p{L}_][\p{L}\p{N}@$#\-_]*)\s?(\((?<alias>[\p{L}_][\p{L}\p{N}@$#\-_]*)\))?/u', $subtable, $match);
 
             if ($match['join'] === '' || $match['table'] === '') {
                 continue;
@@ -1309,7 +1361,7 @@ class Medoo
                                 $table . '.' . $this->columnQuote($key)
                         ) .
                         ' = ' .
-                        $this->tableQuote($match['alias'] ?? $match['table']) . '.' . $this->columnQuote($value);
+                        ($match['schema']?$this->schemaQuote($match['schema']).".":"").$this->tableQuote($match['alias'] ?? $match['table']) . '.' . $this->columnQuote($value);
                     }
 
                     $relation = 'ON ' . implode(' AND ', $joins);
@@ -1318,7 +1370,7 @@ class Medoo
                 $relation = $raw;
             }
 
-            $tableName = $this->tableQuote($match['table']);
+            $tableName = ($match['schema']?$this->schemaQuote($match['schema']).".":"").$this->tableQuote($match['table']);
 
             if (isset($match['alias'])) {
                 $tableName .= ' AS ' . $this->tableQuote($match['alias']);
@@ -1346,17 +1398,23 @@ class Medoo
 
         foreach ($columns as $key => $value) {
             if (is_int($key)) {
-                preg_match('/([\p{L}_][\p{L}\p{N}@$#\-_]*\.)?(?<column>[\p{L}_][\p{L}\p{N}@$#\-_]*)(?:\s*\((?<alias>[\p{L}_][\p{L}\p{N}@$#\-_]*)\))?(?:\s*\[(?<type>(?:String|Bool|Int|Number|Object|JSON))\])?/u', $value, $keyMatch);
+                preg_match('/(?:(?<table>[\p{L}_][\p{L}\p{N}@$#\-_]*)\.)?(?<column>[\p{L}_*][\p{L}\p{N}@$#\-_]*)(?:\s*\((?<alias>[\p{L}_][\p{L}\p{N}@$#\-_]*)\))?(?:\s*\[(?<type>(?:String|Bool|Int|Number|Object|JSON))\])?/u', $value, $keyMatch);
 
                 $columnKey = !empty($keyMatch['alias']) ?
                     $keyMatch['alias'] :
                     $keyMatch['column'];
-
-                $stack[$value] = isset($keyMatch['type']) ?
-                    [$columnKey, $keyMatch['type']] :
-                    [$columnKey];
+				if($columnKey == "*"){
+					$column_list = $this->query("SELECT column_name FROM information_schema.columns WHERE table_name = :table",[":table"=>$keyMatch['table']])->fetchAll(\PDO::FETCH_COLUMN);
+					foreach($column_list as $column){
+						$stack[$keyMatch["table"].".*"][] = $column;
+					}
+				} else {
+					$stack[$value] = isset($keyMatch['type']) ?
+						[$columnKey, $keyMatch['type']] :
+						[$columnKey];
+				}
             } elseif ($this->isRaw($value)) {
-                preg_match('/([\p{L}_][\p{L}\p{N}@$#\-_]*\.)?(?<column>[\p{L}_][\p{L}\p{N}@$#\-_]*)(\s*\[(?<type>(String|Bool|Int|Number))\])?/u', $key, $keyMatch);
+                preg_match('/([\p{L}_][\p{L}\p{N}@$#\-_]*\.)?(?<column>[\p{L}_*][\p{L}\p{N}@$#\-_]*)(\s*\[(?<type>(String|Bool|Int|Number))\])?/u', $key, $keyMatch);
                 $columnKey = $keyMatch['column'];
 
                 $stack[$key] = isset($keyMatch['type']) ?
@@ -1430,49 +1488,56 @@ class Medoo
             $isRaw = $this->isRaw($value);
 
             if (is_int($key) || $isRaw) {
-                $map = $columnMap[$isRaw ? $key : $value];
-                $columnKey = $map[0];
-                $item = $data[$columnKey];
+                $map_temp = $columnMap[$isRaw ? $key : $value];
+				if(str_ends_with($value,".*")){
+					$column_list = array_map(function($item){return [$item];},$map_temp);
+				} else {
+					$column_list = [$map_temp];
+				}
+				foreach($column_list as $map){
+					$columnKey = $map[0];
+					$item = $data[$columnKey];
 
-                if (isset($map[1])) {
-                    if ($isRaw && in_array($map[1], ['Object', 'JSON'])) {
-                        continue;
-                    }
+					if (isset($map[1])) {
+						if ($isRaw && in_array($map[1], ['Object', 'JSON'])) {
+							continue;
+						}
 
-                    if (is_null($item)) {
-                        $stack[$columnKey] = null;
-                        continue;
-                    }
+						if (is_null($item)) {
+							$stack[$columnKey] = null;
+							continue;
+						}
 
-                    switch ($map[1]) {
+						switch ($map[1]) {
 
-                        case 'Number':
-                            $stack[$columnKey] = (float) $item;
-                            break;
+							case 'Number':
+								$stack[$columnKey] = (float) $item;
+								break;
 
-                        case 'Int':
-                            $stack[$columnKey] = (int) $item;
-                            break;
+							case 'Int':
+								$stack[$columnKey] = (int) $item;
+								break;
 
-                        case 'Bool':
-                            $stack[$columnKey] = (bool) $item;
-                            break;
+							case 'Bool':
+								$stack[$columnKey] = (bool) $item;
+								break;
 
-                        case 'Object':
-                            $stack[$columnKey] = unserialize($item);
-                            break;
+							case 'Object':
+								$stack[$columnKey] = unserialize($item);
+								break;
 
-                        case 'JSON':
-                            $stack[$columnKey] = json_decode($item, true);
-                            break;
+							case 'JSON':
+								$stack[$columnKey] = json_decode($item, true);
+								break;
 
-                        case 'String':
-                            $stack[$columnKey] = (string) $item;
-                            break;
-                    }
-                } else {
-                    $stack[$columnKey] = $item;
-                }
+							case 'String':
+								$stack[$columnKey] = (string) $item;
+								break;
+						}
+					} else {
+						$stack[$columnKey] = $item;
+					}
+				}
             } else {
                 $currentStack = [];
                 $this->dataMap($data, $value, $columnMap, $currentStack, false, $result);
@@ -1529,7 +1594,12 @@ class Medoo
     {
         $stack = [];
         $tableOption = '';
-        $tableName = $this->tableQuote($table);
+		$schema_table = explode(".",$table);
+		$table = $this->tableQuote(end($schema_table));
+		if(count($schema_table)==2){
+			$table = $this->schemaQuote($schema_table[0]).".".$table;
+		}
+        $tableName = $table;
 
         foreach ($columns as $name => $definition) {
             if (is_int($name)) {
@@ -1572,7 +1642,12 @@ class Medoo
      */
     public function drop(string $table): ?PDOStatement
     {
-        return $this->exec('DROP TABLE IF EXISTS ' . $this->tableQuote($table));
+		$schema_table = explode(".",$table);
+		$table = $this->tableQuote(end($schema_table));
+		if(count($schema_table)==2){
+			$table = $this->schemaQuote($schema_table[0]).".".$table;
+		}
+        return $this->exec('DROP TABLE IF EXISTS ' . $table);
     }
 
     /**
@@ -1601,7 +1676,6 @@ class Medoo
         $isSingle = (is_string($column) && $column !== '*');
 
         $statement = $this->exec($this->selectContext($table, $map, $join, $columns, $where), $map);
-
         $this->columnMap($columns, $columnMap, true);
 
         if (!$this->statement) {
@@ -1738,7 +1812,12 @@ class Medoo
             $fields[] = $this->columnQuote(preg_replace("/(\s*\[JSON\]$)/i", '', $key));
         }
 
-        $query = 'INSERT INTO ' . $this->tableQuote($table) . ' (' . implode(', ', $fields) . ') VALUES ' . implode(', ', $stack);
+		$schema_table = explode(".",$table);
+		$table = $this->tableQuote(end($schema_table));
+		if(count($schema_table)==2){
+			$table = $this->schemaQuote($schema_table[0]).".".$table;
+		}
+        $query = 'INSERT INTO ' . $table . ' (' . implode(', ', $fields) . ') VALUES ' . implode(', ', $stack);
 
         if (
             $this->type === 'oracle' && (!empty($returnings) || isset($primaryKey))
@@ -1788,7 +1867,7 @@ class Medoo
                 continue;
             }
 
-            preg_match('/(?<column>[\p{L}_][\p{L}\p{N}@$#\-_]*)(\[(?<operator>\+|\-|\*|\/)\])?/u', $key, $match);
+            preg_match('/(?<column>[\p{L}_*][\p{L}\p{N}@$#\-_]*)(\[(?<operator>\+|\-|\*|\/)\])?/u', $key, $match);
 
             if (isset($match['operator'])) {
                 if (is_numeric($value)) {
@@ -1825,7 +1904,12 @@ class Medoo
             }
         }
 
-        $query = 'UPDATE ' . $this->tableQuote($table) . ' SET ' . implode(', ', $fields) . $this->whereClause($where, $map);
+		$schema_table = explode(".",$table);
+		$table = $this->tableQuote(end($schema_table));
+		if(count($schema_table)==2){
+			$table = $this->schemaQuote($schema_table[0]).".".$table;
+		}
+        $query = 'UPDATE ' . $table . ' SET ' . implode(', ', $fields) . $this->whereClause($where, $map);
 
         if ($this->type === 'oracle' && !empty($returnings)) {
             return $this->returningQuery($query, $map, $returnings);
@@ -1844,8 +1928,13 @@ class Medoo
     public function delete(string $table, $where): ?PDOStatement
     {
         $map = [];
+		$schema_table = explode(".",$table);
+		$table = $this->tableQuote(end($schema_table));
+		if(count($schema_table)==2){
+			$table = $this->schemaQuote($schema_table[0]).".".$table;
+		}
 
-        return $this->exec('DELETE FROM ' . $this->tableQuote($table) . $this->whereClause($where, $map), $map);
+        return $this->exec('DELETE FROM ' . $table . $this->whereClause($where, $map), $map);
     }
 
     /**
@@ -1877,8 +1966,13 @@ class Medoo
         if (empty($stack)) {
             throw new InvalidArgumentException('Invalid columns supplied.');
         }
+		$schema_table = explode(".",$table);
+		$table = $this->tableQuote(end($schema_table));
+		if(count($schema_table)==2){
+			$table = $this->schemaQuote($schema_table[0]).".".$table;
+		}
 
-        return $this->exec('UPDATE ' . $this->tableQuote($table) . ' SET ' . implode(', ', $stack) . $this->whereClause($where, $map), $map);
+        return $this->exec('UPDATE ' . $table . ' SET ' . implode(', ', $stack) . $this->whereClause($where, $map), $map);
     }
 
     /**
