@@ -906,20 +906,24 @@ class Medoo
 
             $mapKey = $this->mapKey();
             $isIndex = is_int($key);
+			$isRaw = $this->isRaw($value);
+			if($isIndex&&$isRaw){
+				$stack[] = $this->buildRaw($value,$map);
+				continue;
+			}
+			preg_match(
+				'/([\p{L}_][\p{L}\p{N}@$#\-_\.]*)(\[(?<operator>.*)\])?([\p{L}_][\p{L}\p{N}@$#\-_\.]*)?/u',
+				$isIndex ? $value : $key,
+				$match
+			);
 
-            preg_match(
-                '/([\p{L}_][\p{L}\p{N}@$#\-_\.]*)(\[(?<operator>.*)\])?([\p{L}_][\p{L}\p{N}@$#\-_\.]*)?/u',
-                $isIndex ? $value : $key,
-                $match
-            );
+			$column = $this->columnQuote($match[1]);
+			$operator = $match['operator'] ?? null;
 
-            $column = $this->columnQuote($match[1]);
-            $operator = $match['operator'] ?? null;
-
-            if ($isIndex && isset($match[4]) && in_array($operator, ['>', '>=', '<', '<=', '=', '!='])) {
-                $stack[] = "{$column} {$operator} " . $this->columnQuote($match[4]);
-                continue;
-            }
+			if ($isIndex && isset($match[4]) && in_array($operator, ['>', '>=', '<', '<=', '=', '!='])) {
+				$stack[] = "{$column} {$operator} " . $this->columnQuote($match[4]);
+				continue;
+			}
 
             if ($operator && $operator != '=') {
                 if (in_array($operator, ['>', '>=', '<', '<='])) {
@@ -1489,7 +1493,7 @@ class Medoo
 
             if (is_int($key) || $isRaw) {
                 $map_temp = $columnMap[$isRaw ? $key : $value];
-				if(str_ends_with($value,".*")){
+				if(is_string($value)&&str_ends_with($value,".*")){
 					$column_list = array_map(function($item){return [$item];},$map_temp);
 				} else {
 					$column_list = [$map_temp];
@@ -1851,6 +1855,7 @@ class Medoo
         $fields = [];
         $map = [];
         $returnings = [];
+		
 
         foreach ($data as $key => $value) {
             $column = $this->columnQuote(preg_replace("/(\s*\[(JSON|\+|\-|\*|\/)\]$)/", '', $key));
@@ -2335,5 +2340,53 @@ class Medoo
         $output['dsn'] = $this->dsn;
 
         return $output;
+    }
+    public function patch(string $table, $data, $unique_column_list){
+        if(is_string($unique_column_list))$unique_column_list = [$unique_column_list];
+        if(!array_is_list($data))$data = [$data];
+        $where = [];
+        foreach($data as $index=>$row){
+            $and = [];
+            foreach($unique_column_list as $column){
+                $and[$column] = $row[$column];
+            }
+            $where["AND #".$index] = $and;
+        }
+        $where = ["OR"=>$where];
+        $current_items = $this->select($table,array_merge(array_keys(reset($data)),array("unique"=>$unique_column_list)),$where);
+        $update_list = [];
+        $insert_list = [];
+        $unique_current_items = array_column($current_items,"unique");
+        array_walk($current_items,function(&$item){
+            unset($item["unique"]);
+        });
+        foreach($data as $row){
+            $unique_row = array_combine($unique_column_list,array_map(function($column) use($row){
+                return $row[$column];
+            },$unique_column_list));
+            if(array_search($unique_row,$unique_current_items) !== false){
+                if(array_search($row,$current_items) === false){
+                    $update_list[] = $row;
+                    $this->update($table,$row,$unique_row);
+                }
+            } else {
+                $insert_list[] = $row;
+            }
+        }
+        if(count($insert_list))$this->insert($table,$insert_list);
+    }
+    public function sync(string $table, $data, $unique_column_list){
+        if(is_string($unique_column_list))$unique_column_list = [$unique_column_list];
+        if(!array_is_list($data))$data = [$data];
+        $where = [];
+        foreach($data as $index=>$row){
+            $and = [];
+            foreach($unique_column_list as $column){
+                $and[$column."[!]"] = $row[$column];
+            }
+            $where["OR #".$index] = $and;
+        }
+        $where = ["AND"=>$where];
+        $this->patch($table,$data,$unique_column_list);
     }
 }
