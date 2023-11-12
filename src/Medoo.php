@@ -2387,6 +2387,7 @@ class Medoo
             $where["OR #".$index] = $and;
         }
         $where = ["AND"=>$where];
+        $this->delete($table,$where);
         $this->patch($table,$data,$unique_column_list);
     }
 }
