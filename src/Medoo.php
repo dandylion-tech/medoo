@@ -911,13 +911,17 @@ class Medoo
 				$stack[] = $this->buildRaw($value,$map);
 				continue;
 			}
-			preg_match(
-				'/([\p{L}_][\p{L}\p{N}@$#\-_\.]*)(\[(?<operator>.*)\])?([\p{L}_][\p{L}\p{N}@$#\-_\.]*)?/u',
-				$isIndex ? $value : $key,
-				$match
-			);
+			if(preg_match("/([A-Z_]+\(.*\))(\[(?<operator>.*)\])?([\p{L}_][\p{L}\p{N}@$#\-_\.]*)?/u",$key,$match)){
+				$column = $match[1];
+			} else {
+				preg_match(
+					'/([\p{L}_][\p{L}\p{N}@$#\-_\.]*)(\[(?<operator>.*)\])?([\p{L}_][\p{L}\p{N}@$#\-_\.]*)?/u',
+					$isIndex ? $value : $key,
+					$match
+				);
 
-			$column = $this->columnQuote($match[1]);
+				$column = $this->columnQuote($match[1]);
+			}
 			$operator = $match['operator'] ?? null;
 
 			if ($isIndex && isset($match[4]) && in_array($operator, ['>', '>=', '<', '<=', '=', '!='])) {
@@ -1076,6 +1080,7 @@ class Medoo
     protected function whereClause($where, array &$map): string
     {
         $clause = '';
+		
 
 			
         if (is_array($where)) {
