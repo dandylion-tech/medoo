@@ -1149,7 +1149,6 @@ class Medoo
 
                 if (is_array($order)) {
                     $stack = [];
-
                     foreach ($order as $column => $value) {
                         if (is_array($value)) {
                             $valueStack = [];
@@ -1162,7 +1161,9 @@ class Medoo
                             $stack[] = "FIELD({$this->columnQuote($column)}, {$valueString})";
                         } elseif ($value === 'ASC' || $value === 'DESC') {
                             $stack[] = $this->columnQuote($column) . ' ' . $value;
-                        } elseif (is_int($column)) {
+                        } elseif ($raw = $this->buildRaw($value,$map)){
+							$stack[] = $raw;
+						} elseif (is_int($column)) {
                             $stack[] = $this->columnQuote($value);
                         }
                     }
