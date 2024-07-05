@@ -50,7 +50,7 @@ $ composer update
 require 'vendor/autoload.php';
 
 // Use the Medoo namespace.
-use Medoo\Medoo;
+use Dandylion\Medoo;
 
 // Connect to the database.
 $database = new Medoo([
