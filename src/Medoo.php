@@ -859,7 +859,8 @@ class Medoo
 							}
 						}
 					} else {
-						$columnString = ($match["table"]?$this->tableQuote($match["table"]).".":"").($match['column']=="*"?"*":$this->columnQuote($match['column']));
+						//$columnString = ($match["table"]?$this->tableQuote($match["table"]).".":"").($match['column']=="*"?"*":$this->columnQuote($match['column']));
+						$columnString = ($match["table"]?$this->tableQuote($match["table"]).".":"").($match['column']=="*"?$this->columnQuote($column_name):$this->columnQuote($match['column']));
 					}
 
 					if (!$hasDistinct && strpos($value, '@') === 0) {
